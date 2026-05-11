@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/cryptotest"
 	"time"
 )
 
@@ -52,19 +53,31 @@ var (
 	bogoReport = flag.String("bogo-html-report", "", "File path to render an HTML report with BoGo results")
 )
 
-func runTestAndUpdateIfNeeded(t *testing.T, name string, run func(t *testing.T, update bool), wait bool) {
+var testConfigServer = &Config{
+	Time:         testTime,
+	Certificates: []Certificate{testECDSAP256Cert, testRSA2048Cert, testEd25519Cert, testSNICert},
+	ClientCAs:    testClientRootCertPool,
+}
+
+var testConfigClient = &Config{
+	Time:         testTime,
+	Certificates: []Certificate{testClientECDSAP256Cert, testClientRSA2048Cert, testClientEd25519Cert},
+	RootCAs:      testRootCertPool,
+	ServerName:   "test.golang.example",
+}
+
+func runTestAndUpdateIfNeeded(t *testing.T, name string, run func(t *testing.T, update bool)) {
 	// FIPS mode is non-deterministic and so isn't suited for testing against static test transcripts.
 	skipFIPS(t)
 
 	success := t.Run(name, func(t *testing.T) {
-		if !*update && !wait {
-			t.Parallel()
-		}
+		cryptotest.SetGlobalRandom(t, 0)
 		run(t, false)
 	})
 
 	if !success && *update {
 		t.Run(name+"#update", func(t *testing.T) {
+			cryptotest.SetGlobalRandom(t, 0)
 			run(t, true)
 		})
 	}
@@ -449,6 +462,18 @@ func runMain(m *testing.M) int {
 		os.Exit(1)
 	}
 
+	rootCAPath := tempFile(testRootCertPEM)
+	defer os.Remove(rootCAPath)
+	defaultClientCommand = []string{"openssl", "s_client", "-no_ticket",
+		"-verify", "1", "-verify_return_error", "-CAfile", rootCAPath,
+		"-servername", "test.golang.example", "-attime", fmt.Sprint(testTime().Unix())}
+
+	clientRootCAPath := tempFile(testClientRootCertPEM)
+	defer os.Remove(clientRootCAPath)
+	serverCommand = []string{"openssl", "s_server", "-no_ticket", "-num_tickets", "0",
+		"-naccept", "1", "-verify_return_error", "-verifyCAfile", clientRootCAPath,
+		"-attime", fmt.Sprint(testTime().Unix())}
+
 	// TODO(filippo): deprecate Config.Rand, and regenerate handshake recordings
 	// to use cryptotest.SetGlobalRandom instead.
 	os.Setenv("GODEBUG", "cryptocustomrand=1,"+os.Getenv("GODEBUG"))
@@ -777,4 +802,52 @@ func concatHandshakeMessages(msgs ...handshakeMessage) ([]byte, error) {
 	outBuf[4] = byte(m)
 	outBuf = append(outBuf, marshalled...)
 	return outBuf, nil
+}
+
+func TestMultipleKeyUpdate(t *testing.T) {
+	for _, requestUpdate := range []bool{true, false} {
+		t.Run(fmt.Sprintf("requestUpdate=%t", requestUpdate), func(t *testing.T) {
+
+			c, s := localPipe(t)
+			cfg := testConfig.Clone()
+			cfg.MinVersion = VersionTLS13
+			cfg.MaxVersion = VersionTLS13
+			client := Client(c, testConfig)
+			server := Server(s, testConfig)
+
+			clientHandshakeDone := make(chan struct{})
+			go func() {
+				if err := client.Handshake(); err != nil {
+				}
+				close(clientHandshakeDone)
+				io.Copy(io.Discard, server)
+			}()
+
+			if err := server.Handshake(); err != nil {
+				t.Fatalf("server handshake failed: %v\n", err)
+			}
+			<-clientHandshakeDone
+
+			c.SetReadDeadline(time.Now().Add(1 * time.Second))
+			s.SetReadDeadline(time.Now().Add(1 * time.Second))
+
+			kuMsg, err := (&keyUpdateMsg{updateRequested: requestUpdate}).marshal()
+			if err != nil {
+				t.Fatalf("failed to marshal key update message: %v", err)
+			}
+
+			client.out.Lock()
+			if _, err := client.writeRecordLocked(recordTypeHandshake, append(kuMsg, kuMsg...)); err != nil {
+				t.Fatalf("failed to write key update messages: %v", err)
+			}
+			client.out.Unlock()
+
+			_, err = io.Copy(io.Discard, client)
+			if err == nil {
+				t.Fatal("expected multiple key update messages to cause an error, got nil")
+			} else if !strings.HasSuffix(err.Error(), "tls: unexpected message") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
 }

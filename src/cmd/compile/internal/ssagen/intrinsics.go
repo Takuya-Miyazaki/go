@@ -302,7 +302,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			s.vars[memVar] = s.newValue3(ssa.OpAtomicStore8, types.TypeMem, args[0], args[1], s.mem())
 			return nil
 		},
-		sys.AMD64, sys.ARM64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
+		sys.AMD64, sys.ARM64, sys.Loong64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
 	addF("internal/runtime/atomic", "Store64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			s.vars[memVar] = s.newValue3(ssa.OpAtomicStore64, types.TypeMem, args[0], args[1], s.mem())
@@ -331,7 +331,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	makeAtomicStoreGuardedIntrinsicLoong64 := func(op0, op1 ssa.Op, typ types.Kind, emit atomicOpEmitter) intrinsicBuilder {
 		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			// Target Atomic feature is identified by dynamic detection
-			addr := s.entryNewValue1A(ssa.OpAddr, types.Types[types.TBOOL].PtrTo(), ir.Syms.Loong64HasLAM_BH, s.sb)
+			addr := s.entryNewValue1A(ssa.OpAddr, types.Types[types.TBOOL].PtrTo(), ir.Syms.Loong64HasDBAR_HINTS, s.sb)
 			v := s.load(types.Types[types.TBOOL], addr)
 			b := s.endBlock()
 			b.Kind = ssa.BlockIf
@@ -343,14 +343,14 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			b.AddEdgeTo(bFalse)
 			b.Likely = ssa.BranchLikely
 
-			// We have atomic instructions - use it directly.
+			// most loong64 machines support the finer-grained DBAR hints
 			s.startBlock(bTrue)
-			emit(s, n, args, op1, typ, false)
+			emit(s, n, args, op0, typ, false)
 			s.endBlock().AddEdgeTo(bEnd)
 
 			// Use original instruction sequence.
 			s.startBlock(bFalse)
-			emit(s, n, args, op0, typ, false)
+			emit(s, n, args, op1, typ, false)
 			s.endBlock().AddEdgeTo(bEnd)
 
 			// Merge results.
@@ -368,20 +368,11 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		}
 	}
 
-	addF("internal/runtime/atomic", "Store8",
-		makeAtomicStoreGuardedIntrinsicLoong64(ssa.OpAtomicStore8, ssa.OpAtomicStore8Variant, types.TUINT8, atomicStoreEmitterLoong64),
-		sys.Loong64)
 	addF("internal/runtime/atomic", "Store",
-		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
-			s.vars[memVar] = s.newValue3(ssa.OpAtomicStore32Variant, types.TypeMem, args[0], args[1], s.mem())
-			return nil
-		},
+		makeAtomicStoreGuardedIntrinsicLoong64(ssa.OpAtomicStore32, ssa.OpAtomicStore32Variant, types.TUINT8, atomicStoreEmitterLoong64),
 		sys.Loong64)
 	addF("internal/runtime/atomic", "Store64",
-		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
-			s.vars[memVar] = s.newValue3(ssa.OpAtomicStore64Variant, types.TypeMem, args[0], args[1], s.mem())
-			return nil
-		},
+		makeAtomicStoreGuardedIntrinsicLoong64(ssa.OpAtomicStore64, ssa.OpAtomicStore64Variant, types.TUINT8, atomicStoreEmitterLoong64),
 		sys.Loong64)
 
 	addF("internal/runtime/atomic", "Xchg8",
@@ -707,9 +698,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	alias("internal/runtime/atomic", "LoadAcq", "internal/runtime/atomic", "Load", lwatomics...)
 	alias("internal/runtime/atomic", "LoadAcq64", "internal/runtime/atomic", "Load64", lwatomics...)
 	alias("internal/runtime/atomic", "LoadAcquintptr", "internal/runtime/atomic", "LoadAcq", p4...)
-	alias("sync", "runtime_LoadAcquintptr", "internal/runtime/atomic", "LoadAcq", p4...) // linknamed
 	alias("internal/runtime/atomic", "LoadAcquintptr", "internal/runtime/atomic", "LoadAcq64", p8...)
-	alias("sync", "runtime_LoadAcquintptr", "internal/runtime/atomic", "LoadAcq64", p8...) // linknamed
 
 	// Aliases for atomic store operations
 	alias("internal/runtime/atomic", "Storeint32", "internal/runtime/atomic", "Store", all...)
@@ -719,9 +708,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	alias("internal/runtime/atomic", "StoreRel", "internal/runtime/atomic", "Store", lwatomics...)
 	alias("internal/runtime/atomic", "StoreRel64", "internal/runtime/atomic", "Store64", lwatomics...)
 	alias("internal/runtime/atomic", "StoreReluintptr", "internal/runtime/atomic", "StoreRel", p4...)
-	alias("sync", "runtime_StoreReluintptr", "internal/runtime/atomic", "StoreRel", p4...) // linknamed
 	alias("internal/runtime/atomic", "StoreReluintptr", "internal/runtime/atomic", "StoreRel64", p8...)
-	alias("sync", "runtime_StoreReluintptr", "internal/runtime/atomic", "StoreRel64", p8...) // linknamed
 
 	// Aliases for atomic swap operations
 	alias("internal/runtime/atomic", "Xchgint32", "internal/runtime/atomic", "Xchg", all...)
@@ -900,6 +887,48 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	addF("math", "Trunc",
 		makeRoundAMD64(ssa.OpTrunc),
 		sys.AMD64)
+
+	makeRoundLoong64 := func(op ssa.Op) func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			addr := s.entryNewValue1A(ssa.OpAddr, types.Types[types.TBOOL].PtrTo(), ir.Syms.Loong64HasLSX, s.sb)
+			v := s.load(types.Types[types.TBOOL], addr)
+			b := s.endBlock()
+			b.Kind = ssa.BlockIf
+			b.SetControl(v)
+			bTrue := s.f.NewBlock(ssa.BlockPlain)
+			bFalse := s.f.NewBlock(ssa.BlockPlain)
+			bEnd := s.f.NewBlock(ssa.BlockPlain)
+			b.AddEdgeTo(bTrue)
+			b.AddEdgeTo(bFalse)
+			b.Likely = ssa.BranchLikely // most loong64 machines support the LSX
+
+			// We have the intrinsic - use it directly.
+			s.startBlock(bTrue)
+			s.vars[n] = s.newValue1(op, types.Types[types.TFLOAT64], args[0])
+			s.endBlock().AddEdgeTo(bEnd)
+
+			// Call the pure Go version.
+			s.startBlock(bFalse)
+			s.vars[n] = s.callResult(n, callNormal) // types.Types[TFLOAT64]
+			s.endBlock().AddEdgeTo(bEnd)
+
+			// Merge results.
+			s.startBlock(bEnd)
+			return s.variable(n, types.Types[types.TFLOAT64])
+		}
+	}
+	addF("math", "RoundToEven",
+		makeRoundLoong64(ssa.OpRoundToEven),
+		sys.Loong64)
+	addF("math", "Floor",
+		makeRoundLoong64(ssa.OpFloor),
+		sys.Loong64)
+	addF("math", "Ceil",
+		makeRoundLoong64(ssa.OpCeil),
+		sys.Loong64)
+	addF("math", "Trunc",
+		makeRoundLoong64(ssa.OpTrunc),
+		sys.Loong64)
 
 	/******** math/bits ********/
 	addF("math/bits", "TrailingZeros64",
@@ -1612,6 +1641,10 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	/******** crypto/internal/constanttime ********/
 	// We implement a superset of the Select promise:
 	// Select returns x if v != 0 and y if v == 0.
+	hasCMOV := []*sys.Arch{sys.ArchAMD64, sys.ArchARM64, sys.ArchLoong64, sys.ArchPPC64, sys.ArchPPC64LE, sys.ArchWasm}
+	if cfg.goriscv64 >= 23 {
+		hasCMOV = append(hasCMOV, sys.ArchRISCV64)
+	}
 	add("crypto/internal/constanttime", "Select",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			v, x, y := args[0], args[1], args[2]
@@ -1631,8 +1664,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			check := s.newValue2(checkOp, types.Types[types.TBOOL], zero, v)
 
 			return s.newValue3(ssa.OpCondSelect, types.Types[types.TINT], x, y, check)
-		},
-		sys.ArchAMD64, sys.ArchARM64, sys.ArchLoong64, sys.ArchPPC64, sys.ArchPPC64LE, sys.ArchWasm) // all with CMOV support.
+		}, hasCMOV...) // all with CMOV support.
 	add("crypto/internal/constanttime", "boolToUint8",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpCvtBoolToUint8, types.Types[types.TUINT8], args[0])
@@ -1939,6 +1971,11 @@ func opLen4_31(op ssa.Op, t *types.Type) func(s *state, n *ir.CallExpr, args []*
 }
 
 func immJumpTable(s *state, idx *ssa.Value, intrinsicCall *ir.CallExpr, genOp func(*state, int)) *ssa.Value {
+	if base.Ctxt.Retpoline {
+		// Note spectre=all implies retpoline which requires binary search instead of table switch.
+		return branchTableImm8(s, idx, intrinsicCall, genOp)
+	}
+
 	// Make blocks we'll need.
 	bEnd := s.f.NewBlock(ssa.BlockPlain)
 
@@ -1953,10 +1990,7 @@ func immJumpTable(s *state, idx *ssa.Value, intrinsicCall *ir.CallExpr, genOp fu
 	b := s.curBlock
 	b.Kind = ssa.BlockJumpTable
 	b.Pos = intrinsicCall.Pos()
-	if base.Flag.Cfg.SpectreIndex {
-		// Potential Spectre vulnerability hardening?
-		idx = s.newValue2(ssa.OpSpectreSliceIndex, t, idx, s.uintptrConstant(255))
-	}
+
 	b.SetControl(idx)
 	targets := [256]*ssa.Block{}
 	for i := range 256 {
@@ -1978,6 +2012,81 @@ func immJumpTable(s *state, idx *ssa.Value, intrinsicCall *ir.CallExpr, genOp fu
 	s.startBlock(bEnd)
 	ret := s.variable(intrinsicCall, intrinsicCall.Type())
 	return ret
+}
+
+func branchTableImm8(s *state, idx *ssa.Value, intrinsicCall *ir.CallExpr, genOp func(*state, int)) *ssa.Value {
+	return branchTableN(s, idx, intrinsicCall, genOp, 256, true)
+}
+
+func branchTableN(s *state, idx *ssa.Value, intrinsicCall *ir.CallExpr, genOp func(*state, int), immLimit uint64, preChecked bool) *ssa.Value {
+	// Make blocks we'll need.
+	bEnd := s.f.NewBlock(ssa.BlockPlain)
+	bPanic := s.f.NewBlock(ssa.BlockPlain)
+
+	jt := s.f.NewBlock(ssa.BlockPlain)
+
+	t := types.Types[types.TUINTPTR]
+	idx = s.conv(nil, idx, idx.Type, t)
+
+	if !preChecked {
+		// Begin with a bounds check
+		width := s.uintptrConstant(immLimit)
+		cmp := s.newValue2(s.ssaOp(ir.OLT, t), types.Types[types.TBOOL], idx, width)
+		bb := s.endBlock()
+		bb.Kind = ssa.BlockIf
+		bb.SetControl(cmp)
+		bb.AddEdgeTo(jt)             // in range - use jump table
+		bb.AddEdgeTo(bPanic)         // out of range - panic
+		bb.Likely = ssa.BranchLikely // panic is unlikely
+
+		s.startBlock(bPanic)
+		s.rtcall(ir.Syms.PanicSimdImm, false, nil)
+	}
+	if s.curBlock != nil {
+		bb := s.endBlock()
+		bb.AddEdgeTo(jt)
+	}
+
+	s.startBlock(jt)
+	jt.Kind = ssa.BlockPlain
+	jt.Pos = intrinsicCall.Pos()
+
+	branchTableNInner(s, idx, 0, immLimit, genOp, bEnd)
+
+	s.startBlock(bEnd)
+	ret := s.variable(intrinsicCall, intrinsicCall.Type())
+	return ret
+}
+
+func branchTableNInner(s *state, idx *ssa.Value, lowInclusive, len uint64, genOp func(*state, int), bEnd *ssa.Block) {
+	t := types.Types[types.TUINTPTR]
+	if len == 0 {
+		panic("empty branch table")
+	}
+	if len == 1 {
+		genOp(s, int(lowInclusive+len-1))
+		if s.curBlock != nil { // if genOp was "panic" then curBlock is already ended and nil
+			if s.curBlock.Kind != ssa.BlockExit {
+				s.curBlock.AddEdgeTo(bEnd)
+			}
+			s.endBlock()
+		}
+		return
+	}
+
+	s.curBlock.Kind = ssa.BlockIf
+	cmp := s.newValue2(s.ssaOp(ir.OLT, t), types.Types[types.TBOOL], idx, s.uintptrConstant(lowInclusive+len/2))
+	bb := s.endBlock()
+	bb.Kind = ssa.BlockIf
+	bb.SetControl(cmp)
+	bMatch := s.f.NewBlock(ssa.BlockPlain)
+	bNext := s.f.NewBlock(ssa.BlockPlain)
+	bb.AddEdgeTo(bMatch)
+	bb.AddEdgeTo(bNext)
+	s.startBlock(bMatch)
+	branchTableNInner(s, idx, lowInclusive, len/2, genOp, bEnd)
+	s.startBlock(bNext)
+	branchTableNInner(s, idx, lowInclusive+len/2, len-len/2, genOp, bEnd)
 }
 
 func opLen1Imm8(op ssa.Op, t *types.Type, offset int) func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {

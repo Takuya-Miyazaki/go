@@ -124,10 +124,10 @@ func init() {
 		num[name] = i
 	}
 	buildReg := func(s string) regMask {
-		m := regMask(0)
+		m := regMask{}
 		for _, r := range strings.Split(s, " ") {
 			if n, ok := num[r]; ok {
-				m |= regMask(1) << uint(n)
+				m = m.addReg(uint(n))
 				continue
 			}
 			panic("register " + r + " not found")
@@ -138,12 +138,12 @@ func init() {
 	// Common individual register masks
 	var (
 		gp         = buildReg("R0 R1 R2 R3 R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R19 R20 R21 R22 R23 R24 R25 R26 R30")
-		gpg        = gp | buildReg("g")
-		gpsp       = gp | buildReg("SP")
-		gpspg      = gpg | buildReg("SP")
-		gpspsbg    = gpspg | buildReg("SB")
+		gpg        = gp.union(buildReg("g"))
+		gpsp       = gp.union(buildReg("SP"))
+		gpspg      = gpg.union(buildReg("SP"))
+		gpspsbg    = gpspg.union(buildReg("SB"))
 		fp         = buildReg("F0 F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12 F13 F14 F15 F16 F17 F18 F19 F20 F21 F22 F23 F24 F25 F26 F27 F28 F29 F30 F31")
-		callerSave = gp | fp | buildReg("g") // runtime.setg (and anything calling it) may clobber g
+		callerSave = gp.union(fp).union(buildReg("g")) // runtime.setg (and anything calling it) may clobber g
 		r25        = buildReg("R25")
 		r24to25    = buildReg("R24 R25")
 		f16to17    = buildReg("F16 F17")
@@ -153,28 +153,28 @@ func init() {
 	// Common regInfo
 	var (
 		gp01           = regInfo{inputs: nil, outputs: []regMask{gp}}
-		gp0flags1      = regInfo{inputs: []regMask{0}, outputs: []regMask{gp}}
+		gp0flags1      = regInfo{inputs: []regMask{regMask{}}, outputs: []regMask{gp}}
 		gp11           = regInfo{inputs: []regMask{gpg}, outputs: []regMask{gp}}
 		gp11sp         = regInfo{inputs: []regMask{gpspg}, outputs: []regMask{gp}}
 		gp1flags       = regInfo{inputs: []regMask{gpg}}
 		gp1flagsflags  = regInfo{inputs: []regMask{gpg}}
 		gp1flags1      = regInfo{inputs: []regMask{gpg}, outputs: []regMask{gp}}
-		gp11flags      = regInfo{inputs: []regMask{gpg}, outputs: []regMask{gp, 0}}
+		gp11flags      = regInfo{inputs: []regMask{gpg}, outputs: []regMask{gp, regMask{}}}
 		gp21           = regInfo{inputs: []regMask{gpg, gpg}, outputs: []regMask{gp}}
 		gp21nog        = regInfo{inputs: []regMask{gp, gp}, outputs: []regMask{gp}}
-		gp21flags      = regInfo{inputs: []regMask{gp, gp}, outputs: []regMask{gp, 0}}
+		gp21flags      = regInfo{inputs: []regMask{gp, gp}, outputs: []regMask{gp, regMask{}}}
 		gp2flags       = regInfo{inputs: []regMask{gpg, gpg}}
 		gp2flagsflags  = regInfo{inputs: []regMask{gpg, gpg}}
 		gp2flags1      = regInfo{inputs: []regMask{gp, gp}, outputs: []regMask{gp}}
-		gp2flags1flags = regInfo{inputs: []regMask{gp, gp, 0}, outputs: []regMask{gp, 0}}
+		gp2flags1flags = regInfo{inputs: []regMask{gp, gp, regMask{}}, outputs: []regMask{gp, regMask{}}}
 		gp2load        = regInfo{inputs: []regMask{gpspsbg, gpg}, outputs: []regMask{gp}}
 		gp31           = regInfo{inputs: []regMask{gpg, gpg, gpg}, outputs: []regMask{gp}}
 		gpload         = regInfo{inputs: []regMask{gpspsbg}, outputs: []regMask{gp}}
 		gpload2        = regInfo{inputs: []regMask{gpspsbg}, outputs: []regMask{gpg, gpg}}
-		gpstore        = regInfo{inputs: []regMask{gpspsbg, gpg | rz}}
-		gpstore2       = regInfo{inputs: []regMask{gpspsbg, gpg | rz, gpg | rz}}
-		gpxchg         = regInfo{inputs: []regMask{gpspsbg, gpg | rz}, outputs: []regMask{gp}}
-		gpcas          = regInfo{inputs: []regMask{gpspsbg, gpg | rz, gpg | rz}, outputs: []regMask{gp}}
+		gpstore        = regInfo{inputs: []regMask{gpspsbg, gpg.union(rz)}}
+		gpstore2       = regInfo{inputs: []regMask{gpspsbg, gpg.union(rz), gpg.union(rz)}}
+		gpxchg         = regInfo{inputs: []regMask{gpspsbg, gpg.union(rz)}, outputs: []regMask{gp}}
+		gpcas          = regInfo{inputs: []regMask{gpspsbg, gpg.union(rz), gpg.union(rz)}, outputs: []regMask{gp}}
 		fp01           = regInfo{inputs: nil, outputs: []regMask{fp}}
 		fp11           = regInfo{inputs: []regMask{fp}, outputs: []regMask{fp}}
 		fpgp           = regInfo{inputs: []regMask{fp}, outputs: []regMask{gp}}
@@ -212,14 +212,14 @@ func init() {
 		{name: "UMULH", argLength: 2, reg: gp21, asm: "UMULH", commutative: true},                                     // (arg0 * arg1) >> 64, unsigned
 		{name: "MULL", argLength: 2, reg: gp21, asm: "SMULL", commutative: true},                                      // arg0 * arg1, signed, 32-bit mult results in 64-bit
 		{name: "UMULL", argLength: 2, reg: gp21, asm: "UMULL", commutative: true},                                     // arg0 * arg1, unsigned, 32-bit mult results in 64-bit
-		{name: "DIV", argLength: 2, reg: gp21, asm: "SDIV"},                                                           // arg0 / arg1, signed
-		{name: "UDIV", argLength: 2, reg: gp21, asm: "UDIV"},                                                          // arg0 / arg1, unsigned
-		{name: "DIVW", argLength: 2, reg: gp21, asm: "SDIVW"},                                                         // arg0 / arg1, signed, 32 bit
-		{name: "UDIVW", argLength: 2, reg: gp21, asm: "UDIVW"},                                                        // arg0 / arg1, unsigned, 32 bit
-		{name: "MOD", argLength: 2, reg: gp21, asm: "REM"},                                                            // arg0 % arg1, signed
-		{name: "UMOD", argLength: 2, reg: gp21, asm: "UREM"},                                                          // arg0 % arg1, unsigned
-		{name: "MODW", argLength: 2, reg: gp21, asm: "REMW"},                                                          // arg0 % arg1, signed, 32 bit
-		{name: "UMODW", argLength: 2, reg: gp21, asm: "UREMW"},                                                        // arg0 % arg1, unsigned, 32 bit
+		{name: "DIV", argLength: 2, reg: gp21, asm: "SDIV", hasSideEffects: true},                                     // arg0 / arg1, signed
+		{name: "UDIV", argLength: 2, reg: gp21, asm: "UDIV", hasSideEffects: true},                                    // arg0 / arg1, unsigned
+		{name: "DIVW", argLength: 2, reg: gp21, asm: "SDIVW", hasSideEffects: true},                                   // arg0 / arg1, signed, 32 bit
+		{name: "UDIVW", argLength: 2, reg: gp21, asm: "UDIVW", hasSideEffects: true},                                  // arg0 / arg1, unsigned, 32 bit
+		{name: "MOD", argLength: 2, reg: gp21, asm: "REM", hasSideEffects: true},                                      // arg0 % arg1, signed
+		{name: "UMOD", argLength: 2, reg: gp21, asm: "UREM", hasSideEffects: true},                                    // arg0 % arg1, unsigned
+		{name: "MODW", argLength: 2, reg: gp21, asm: "REMW", hasSideEffects: true},                                    // arg0 % arg1, signed, 32 bit
+		{name: "UMODW", argLength: 2, reg: gp21, asm: "UREMW", hasSideEffects: true},                                  // arg0 % arg1, unsigned, 32 bit
 
 		{name: "FADDS", argLength: 2, reg: fp21, asm: "FADDS", commutative: true},   // arg0 + arg1
 		{name: "FADDD", argLength: 2, reg: fp21, asm: "FADDD", commutative: true},   // arg0 + arg1
@@ -248,6 +248,7 @@ func init() {
 		{name: "NEGSflags", argLength: 1, reg: gp11flags, typ: "(UInt64,Flags)", asm: "NEGS"}, // -arg0, set flags.
 		{name: "NGCzerocarry", argLength: 1, reg: gp0flags1, typ: "UInt64", asm: "NGC"},       // -1 if borrowing, 0 otherwise.
 		{name: "FABSD", argLength: 1, reg: fp11, asm: "FABSD"},                                // abs(arg0), float64
+		{name: "FABSS", argLength: 1, reg: fp11, asm: "FABSS"},                                // abs(arg0), float32
 		{name: "FNEGS", argLength: 1, reg: fp11, asm: "FNEGS"},                                // -arg0, float32
 		{name: "FNEGD", argLength: 1, reg: fp11, asm: "FNEGD"},                                // -arg0, float64
 		{name: "FSQRTD", argLength: 1, reg: fp11, asm: "FSQRTD"},                              // sqrt(arg0), float64
@@ -384,7 +385,7 @@ func init() {
 		{name: "FMOVSconst", argLength: 0, reg: fp01, aux: "Float64", asm: "FMOVS", typ: "Float32", rematerializeable: true}, // auxint as 64-bit float, convert to 32-bit float
 		{name: "FMOVDconst", argLength: 0, reg: fp01, aux: "Float64", asm: "FMOVD", typ: "Float64", rematerializeable: true}, // auxint as 64-bit float
 
-		{name: "MOVDaddr", argLength: 1, reg: regInfo{inputs: []regMask{buildReg("SP") | buildReg("SB")}, outputs: []regMask{gp}}, aux: "SymOff", asm: "MOVD", rematerializeable: true, symEffect: "Addr"}, // arg0 + auxInt + aux.(*gc.Sym), arg0=SP/SB
+		{name: "MOVDaddr", argLength: 1, reg: regInfo{inputs: []regMask{buildReg("SP").union(buildReg("SB"))}, outputs: []regMask{gp}}, aux: "SymOff", asm: "MOVD", rematerializeable: true, symEffect: "Addr"}, // arg0 + auxInt + aux.(*gc.Sym), arg0=SP/SB
 
 		{name: "MOVBload", argLength: 2, reg: gpload, aux: "SymOff", asm: "MOVB", typ: "Int8", faultOnNilArg0: true, symEffect: "Read"},      // load from arg0 + auxInt + aux.  arg1=mem.
 		{name: "MOVBUload", argLength: 2, reg: gpload, aux: "SymOff", asm: "MOVBU", typ: "UInt8", faultOnNilArg0: true, symEffect: "Read"},   // load from arg0 + auxInt + aux.  arg1=mem.
@@ -395,6 +396,7 @@ func init() {
 		{name: "MOVDload", argLength: 2, reg: gpload, aux: "SymOff", asm: "MOVD", typ: "UInt64", faultOnNilArg0: true, symEffect: "Read"},    // load from arg0 + auxInt + aux.  arg1=mem.
 		{name: "FMOVSload", argLength: 2, reg: fpload, aux: "SymOff", asm: "FMOVS", typ: "Float32", faultOnNilArg0: true, symEffect: "Read"}, // load from arg0 + auxInt + aux.  arg1=mem.
 		{name: "FMOVDload", argLength: 2, reg: fpload, aux: "SymOff", asm: "FMOVD", typ: "Float64", faultOnNilArg0: true, symEffect: "Read"}, // load from arg0 + auxInt + aux.  arg1=mem.
+		{name: "FMOVQload", argLength: 2, reg: fpload, aux: "SymOff", asm: "FMOVQ", typ: "Vec128", faultOnNilArg0: true, symEffect: "Read"},  // load from arg0 + auxInt + aux.  arg1=mem.
 
 		// LDP instructions load the contents of two adjacent locations in memory into registers.
 		// Address to start loading is addr = arg0 + auxInt + aux.
@@ -407,6 +409,7 @@ func init() {
 		{name: "LDPSW", argLength: 2, reg: gpload2, aux: "SymOff", asm: "LDPSW", typ: "(Int32,Int32)", faultOnNilArg0: true, symEffect: "Read"},     // T=int32 (gp reg destination) signed extension
 		{name: "FLDPD", argLength: 2, reg: fpload2, aux: "SymOff", asm: "FLDPD", typ: "(Float64,Float64)", faultOnNilArg0: true, symEffect: "Read"}, // T=float64 (fp reg destination)
 		{name: "FLDPS", argLength: 2, reg: fpload2, aux: "SymOff", asm: "FLDPS", typ: "(Float32,Float32)", faultOnNilArg0: true, symEffect: "Read"}, // T=float32 (fp reg destination)
+		{name: "FLDPQ", argLength: 2, reg: fpload2, aux: "SymOff", asm: "FLDPQ", typ: "(Vec128,Vec128)", faultOnNilArg0: true, symEffect: "Read"},   // T=vec128 (fp reg destination)
 
 		// register indexed load
 		{name: "MOVDloadidx", argLength: 3, reg: gp2load, asm: "MOVD", typ: "UInt64"},    // load 64-bit dword from arg0 + arg1, arg2 = mem.
@@ -434,6 +437,7 @@ func init() {
 		{name: "MOVDstore", argLength: 3, reg: gpstore, aux: "SymOff", asm: "MOVD", typ: "Mem", faultOnNilArg0: true, symEffect: "Write"},   // store 8 bytes of arg1 to arg0 + auxInt + aux.  arg2=mem.
 		{name: "FMOVSstore", argLength: 3, reg: fpstore, aux: "SymOff", asm: "FMOVS", typ: "Mem", faultOnNilArg0: true, symEffect: "Write"}, // store 4 bytes of arg1 to arg0 + auxInt + aux.  arg2=mem.
 		{name: "FMOVDstore", argLength: 3, reg: fpstore, aux: "SymOff", asm: "FMOVD", typ: "Mem", faultOnNilArg0: true, symEffect: "Write"}, // store 8 bytes of arg1 to arg0 + auxInt + aux.  arg2=mem.
+		{name: "FMOVQstore", argLength: 3, reg: fpstore, aux: "SymOff", asm: "FMOVQ", typ: "Mem", faultOnNilArg0: true, symEffect: "Write"}, // store 16 bytes of arg1 to arg0 + auxInt + aux.  arg2=mem.
 
 		// STP instructions store the contents of two registers to adjacent locations in memory.
 		// Address to start storing is addr = arg0 + auxInt + aux.
@@ -444,6 +448,7 @@ func init() {
 		{name: "STPW", argLength: 4, reg: gpstore2, aux: "SymOff", asm: "STPW", typ: "Mem", faultOnNilArg0: true, symEffect: "Write"},   // T=int32 (gp reg source)
 		{name: "FSTPD", argLength: 4, reg: fpstore2, aux: "SymOff", asm: "FSTPD", typ: "Mem", faultOnNilArg0: true, symEffect: "Write"}, // T=float64 (fp reg source)
 		{name: "FSTPS", argLength: 4, reg: fpstore2, aux: "SymOff", asm: "FSTPS", typ: "Mem", faultOnNilArg0: true, symEffect: "Write"}, // T=float32 (fp reg source)
+		{name: "FSTPQ", argLength: 4, reg: fpstore2, aux: "SymOff", asm: "FSTPQ", typ: "Mem", faultOnNilArg0: true, symEffect: "Write"}, // T=vec128 (fp reg source)
 
 		// register indexed store
 		{name: "MOVBstoreidx", argLength: 4, reg: gpstore2, asm: "MOVB", typ: "Mem"},     // store 1 byte of arg2 to arg0 + arg1, arg3 = mem.
@@ -495,12 +500,18 @@ func init() {
 		{name: "FCVTSD", argLength: 1, reg: fp11, asm: "FCVTSD"},     // float32 -> float64
 		{name: "FCVTDS", argLength: 1, reg: fp11, asm: "FCVTDS"},     // float64 -> float32
 
-		// floating-point round to integral
-		{name: "FRINTAD", argLength: 1, reg: fp11, asm: "FRINTAD"},
-		{name: "FRINTMD", argLength: 1, reg: fp11, asm: "FRINTMD"},
-		{name: "FRINTND", argLength: 1, reg: fp11, asm: "FRINTND"},
-		{name: "FRINTPD", argLength: 1, reg: fp11, asm: "FRINTPD"},
-		{name: "FRINTZD", argLength: 1, reg: fp11, asm: "FRINTZD"},
+		// 64-bit floating-point round to integers in 64-bit FP format
+		{name: "FRINTAD", argLength: 1, reg: fp11, asm: "FRINTAD"}, // Round (ties Away from zero; 0.5 -> 1, -0.5 -> -1)
+		{name: "FRINTMD", argLength: 1, reg: fp11, asm: "FRINTMD"}, // Floor (towards Minus; 0.5 -> 0, -0.5 -> -1)
+		{name: "FRINTND", argLength: 1, reg: fp11, asm: "FRINTND"}, // Round (ties to even; ; 0.5 -> 0, 1.5 -> 2)
+		{name: "FRINTPD", argLength: 1, reg: fp11, asm: "FRINTPD"}, // Ceil (towards Positive; 0.5 -> 1, -0.5 -> 0)
+		{name: "FRINTZD", argLength: 1, reg: fp11, asm: "FRINTZD"}, // Trunc (towards Zero; 0.5 -> 0, -0.5 -> 0))
+		// 32-bit floating-point round to integers in 32-bit FP format
+		{name: "FRINTAS", argLength: 1, reg: fp11, asm: "FRINTAS"}, // Round (ties Away from zero; 0.5 -> 1, -0.5 -> -1)
+		{name: "FRINTMS", argLength: 1, reg: fp11, asm: "FRINTMS"}, // Floor (towards Minus; 0.5 -> 0, -0.5 -> -1)
+		{name: "FRINTNS", argLength: 1, reg: fp11, asm: "FRINTNS"}, // Round (ties to even; ; 0.5 -> 0, 1.5 -> 2)
+		{name: "FRINTPS", argLength: 1, reg: fp11, asm: "FRINTPS"}, // Ceil (towards Positive; 0.5 -> 1, -0.5 -> 0)
+		{name: "FRINTZS", argLength: 1, reg: fp11, asm: "FRINTZS"}, // Trunc (towards Zero; 0.5 -> 0, -0.5 -> 0))
 
 		// conditional instructions; auxint is
 		// one of the arm64 comparison pseudo-ops (LessThan, LessThanU, etc.)
@@ -528,10 +539,11 @@ func init() {
 		{name: "CCMNWconst", argLength: 2, reg: gp1flagsflags, asm: "CCMNW", aux: "ARM64ConditionalParams", typ: "Flags"}, // If Cond then flags = CCMNWconst [ConstValue] arg0 else flags = Nzcv
 
 		// function calls
-		{name: "CALLstatic", argLength: -1, reg: regInfo{clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true},                                               // call static function aux.(*obj.LSym).  last arg=mem, auxint=argsize, returns mem
-		{name: "CALLtail", argLength: -1, reg: regInfo{clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true, tailCall: true},                                 // tail call static function aux.(*obj.LSym).  last arg=mem, auxint=argsize, returns mem
-		{name: "CALLclosure", argLength: -1, reg: regInfo{inputs: []regMask{gpsp, buildReg("R26"), 0}, clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true}, // call function via closure.  arg0=codeptr, arg1=closure, last arg=mem, auxint=argsize, returns mem
-		{name: "CALLinter", argLength: -1, reg: regInfo{inputs: []regMask{gp}, clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true},                         // call fn by pointer.  arg0=codeptr, last arg=mem, auxint=argsize, returns mem
+		{name: "CALLstatic", argLength: -1, reg: regInfo{clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true},                                                       // call static function aux.(*obj.LSym).  last arg=mem, auxint=argsize, returns mem
+		{name: "CALLtail", argLength: -1, reg: regInfo{clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true, tailCall: true},                                         // tail call static function aux.(*obj.LSym).  last arg=mem, auxint=argsize, returns mem
+		{name: "CALLtailinter", argLength: -1, reg: regInfo{inputs: []regMask{gp}, clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true, tailCall: true},             // tail call fn by pointer. arg0=codeptr, last arg=mem, auxint=argsize, returns mem
+		{name: "CALLclosure", argLength: -1, reg: regInfo{inputs: []regMask{gpsp, buildReg("R26"), regMask{}}, clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true}, // call function via closure.  arg0=codeptr, arg1=closure, last arg=mem, auxint=argsize, returns mem
+		{name: "CALLinter", argLength: -1, reg: regInfo{inputs: []regMask{gp}, clobbers: callerSave}, aux: "CallOff", clobberFlags: true, call: true},                                 // call fn by pointer.  arg0=codeptr, last arg=mem, auxint=argsize, returns mem
 
 		// pseudo-ops
 		{name: "LoweredNilCheck", argLength: 2, reg: regInfo{inputs: []regMask{gpg}}, nilCheck: true, faultOnNilArg0: true},                                                                                                                                                      // panic if arg0 is nil.  arg1=mem.
@@ -601,8 +613,8 @@ func init() {
 			aux:       "Int64",
 			argLength: 3,
 			reg: regInfo{
-				inputs:   []regMask{gp &^ r25, gp &^ r25},
-				clobbers: r25 | f16to17, // TODO: figure out needIntTemp + x2 for floats
+				inputs:   []regMask{gp.minus(r25), gp.minus(r25)},
+				clobbers: r25.union(f16to17), // TODO: figure out needIntTemp + x2 for floats
 			},
 			faultOnNilArg0: true,
 			faultOnNilArg1: true,
@@ -619,8 +631,8 @@ func init() {
 			aux:       "Int64",
 			argLength: 3,
 			reg: regInfo{
-				inputs:       []regMask{gp &^ r24to25, gp &^ r24to25},
-				clobbers:     r24to25 | f16to17, // TODO: figure out needIntTemp x2 + x2 for floats
+				inputs:       []regMask{gp.minus(r24to25), gp.minus(r24to25)},
+				clobbers:     r24to25.union(f16to17), // TODO: figure out needIntTemp x2 + x2 for floats
 				clobbersArg0: true,
 				clobbersArg1: true,
 			},
@@ -762,7 +774,7 @@ func init() {
 		// but clobbers R30 (LR) because it's a call.
 		// R16 and R17 may be clobbered by linker trampoline.
 		// Returns a pointer to a write barrier buffer in R25.
-		{name: "LoweredWB", argLength: 1, reg: regInfo{clobbers: (callerSave &^ gpg) | buildReg("R16 R17 R30"), outputs: []regMask{buildReg("R25")}}, clobberFlags: true, aux: "Int64"},
+		{name: "LoweredWB", argLength: 1, reg: regInfo{clobbers: callerSave.minus(gpg).union(buildReg("R16 R17 R30")), outputs: []regMask{buildReg("R25")}}, clobberFlags: true, aux: "Int64"},
 
 		// LoweredPanicBoundsRR takes x and y, two values that caused a bounds check to fail.
 		// the RC and CR versions are used when one of the arguments is a constant. CC is used

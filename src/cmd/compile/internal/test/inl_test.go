@@ -51,7 +51,6 @@ func TestIntendedInlining(t *testing.T) {
 			"noescape",
 			"pcvalueCacheKey",
 			"rand32",
-			"readUnaligned32",
 			"readUnaligned64",
 			"releasem",
 			"roundupsize",
@@ -113,11 +112,12 @@ func TestIntendedInlining(t *testing.T) {
 		"internal/runtime/math": {
 			"MulUintptr",
 		},
+		"internal/runtime/maps": {
+			"readUnaligned32",
+			"readUnaligned64",
+		},
 		"internal/runtime/sys": {},
 		"compress/flate": {
-			"byLiteral.Len",
-			"byLiteral.Less",
-			"byLiteral.Swap",
 			"(*dictDecoder).tryWriteCopy",
 		},
 		"encoding/base64": {
@@ -233,6 +233,9 @@ func TestIntendedInlining(t *testing.T) {
 		"testing": {
 			"(*B).Loop",
 		},
+		"time": {
+			"Duration.String",
+		},
 		"path": {
 			"Base",
 			"scanChunk",
@@ -262,7 +265,7 @@ func TestIntendedInlining(t *testing.T) {
 	}
 	if bits.UintSize == 64 {
 		// mix is only defined on 64-bit architectures
-		want["runtime"] = append(want["runtime"], "mix")
+		want["internal/runtime/maps"] = append(want["internal/runtime/maps"], "mix")
 		// (*Bool).CompareAndSwap is just over budget on 32-bit systems (386, arm).
 		want["sync/atomic"] = append(want["sync/atomic"], "(*Bool).CompareAndSwap")
 	}
@@ -303,11 +306,7 @@ func TestIntendedInlining(t *testing.T) {
 	}
 
 	// Functions that must actually be inlined; they must have actual callers.
-	must := map[string]bool{
-		"compress/flate.byLiteral.Len":  true,
-		"compress/flate.byLiteral.Less": true,
-		"compress/flate.byLiteral.Swap": true,
-	}
+	must := map[string]bool{}
 
 	notInlinedReason := make(map[string]string)
 	pkgs := make([]string, 0, len(want))
